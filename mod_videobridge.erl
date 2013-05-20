@@ -69,7 +69,9 @@ fqdn(Host) -> <<?SUBDOMAIN/binary, ".", Host/binary>>.
 
 % items discovery hook: add handler
 %
-disco_items(Acc, From, To, Node, Lang) -> 
+disco_items(empty, From, To, Node, Lang) ->
+	disco_items({result, []}, From, To, Node, Lang);
+disco_items(Acc  , From, To, Node, Lang) -> 
 	?DEBUG("disco items: ~p ~p ~p~n", [From, To, Node]),
 	Fqdn = fqdn(To#jid.lserver),
 	{result, Items} = Acc,
