@@ -76,8 +76,8 @@ disco_items(Acc  , From, To, Node, Lang) ->
 	Fqdn = fqdn(To#jid.lserver),
 	{result, Items} = Acc,
 
-	Node = #xmlel{name= <<"item">>, attrs=[{"jid", Fqdn}]},
-	{result, Items ++ [Node]}.
+	Item = #xmlel{name= <<"item">>, attrs=[{"jid", Fqdn}]},
+	{result, Items ++ [Item]}.
 
 disco_identity(Acc, From, To, Node, Lang) ->
 	Id = #xmlel{name= <<"identity">>, attrs=[
