@@ -67,6 +67,7 @@ init([Host, Opts]) ->
 	%
 	random:seed(),
 	ets:new(videobridge_channel, [bag,named_table,public]),
+	application:start(gproc),
 
 	% discovery hooks
 	%mod_disco:register_feature(Host, ?NS_COLIBRI),
@@ -182,6 +183,11 @@ channel(allocate, undef, {ConfId, Type}) ->
 		rtcpport=random:uniform(9999)
 	},
 	ets:insert(videobridge_channel, {ChanId, Chan}),
+	% channel udprelay proc is stored as a local gproc index
+	{ok, Proc} = udprelay:start_link([{port,Chan#channel.rtpport}]),
+	?DEBUG("videobridge: udprelay proc= ~p~n", [Proc]),
+	%gproc:add_local_property({udprelay,ChanId}, Proc),
+	gproc:reg({n,l,{udprelay,ChanId}}, Proc),
 	
 	#xmlel{name= <<"channel">>, attrs=[
 		{<<"id">>      , jlib:integer_to_binary(ChanId)},
