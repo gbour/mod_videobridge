@@ -24,9 +24,11 @@
 -define(SUBDOMAIN, <<"jitsi-videobridge">>).
 -define(NS_COLIBRI, <<"http://jitsi.org/protocol/colibri">>).
 -record(state, {
-  host,
-  available_ports,
-  udprelays=dict:new()
+  host        = <<"">>,
+  public_ip   = <<"127.0.0.1">>,
+  rtp_range   = {},
+  alloc_ports = [],
+  udprelays   = dict:new()
 }).
 
 -record(channel, {
@@ -64,14 +66,13 @@ stop(Host) ->
 % - return default context
 init([Host, Opts]) ->
 	Fqdn = fqdn(Host),
-	?DEBUG("videobridge:init:: ~p, ~p~n", [Fqdn, Opts]),
-	%{MinPort, MaxPort} = proplists:get_value(udp_range, Opts),
-	{MinPort, MaxPort} = {1,2},
+	Ip   = bin(proplists:get_value(public_ip, Opts)),
+	{MinPort, MaxPort} = proplists:get_value(rtp_range, Opts),
+
+	?DEBUG("videobridge:init:: ~p, ~p, ~p~n", [Fqdn, Ip, {MinPort,MaxPort}]),
 
 	%
 	random:seed(),
-	%ets:new(videobridge_channel, [bag,named_table,public]),
-	%application:start(gproc),
 	ets:new(videobridge_confs, [bag,named_table,public]),
 
 	% discovery hooks
@@ -86,9 +87,14 @@ init([Host, Opts]) ->
 
 	ejabberd_router:register_route(Fqdn),
 	
-	{ok, #state{host=Host, available_ports=lists:seq(MinPort, MaxPort)}}.
+	{ok, #state{host=Host, public_ip=Ip, rtp_range={MinPort,MaxPort}}}.
 
 fqdn(Host) -> <<?SUBDOMAIN/binary, ".", Host/binary>>.
+bin(Item) when is_binary(Item) ->
+	Item;
+bin(Item) when is_list(Item) ->
+	%io_lib:printable_list(Item) ->
+	erlang:list_to_binary(Item).
 
 % items discovery hook: add handler
 %
@@ -117,13 +123,13 @@ disco_features(empty, From, To, Node, Lang) ->
 handle_info({route, From, To, Packet}, State) ->
 	?DEBUG("videobridge: from ~p to ~p received ~p~n", [From, To, Packet]),
 
-	Res = do_route(From, To, jlib:iq_query_info(Packet)),
+	Res = do_route(From, To, jlib:iq_query_info(Packet), State),
 	ejabberd_router:route(To, From, jlib:iq_to_xml(Res)),
 
 	{noreply, State}.
 
 % emulate disco 
-do_route(From, To, IQ=#iq{type=get, xmlns=?NS_DISCO_INFO}) ->
+do_route(From, To, IQ=#iq{type=get, xmlns=?NS_DISCO_INFO}, _) ->
 	#iq{lang=Lang, sub_el = SubEl} = IQ,
 	Host = To#jid.lserver,
 	Node = xml:get_tag_attr_s(<<"node">>, SubEl),
@@ -134,7 +140,7 @@ do_route(From, To, IQ=#iq{type=get, xmlns=?NS_DISCO_INFO}) ->
 
 	mod_disco:process_local_iq_info(From, To, IQ);
 
-do_route(From, To, #iq{xmlns=?NS_COLIBRI, sub_el=El}) when
+do_route(From, To, #iq{xmlns=?NS_COLIBRI, sub_el=El}, State) when
 		El#xmlel.name =:= <<"conference">> ->
 %		sub_el=#xmlel{name=<<"conference">>, attrs=Attrs, children=Elts}}) ->
 	?DEBUG("videobridge: conference query~n",[]),
@@ -146,7 +152,7 @@ do_route(From, To, #iq{xmlns=?NS_COLIBRI, sub_el=El}) when
 	%TODO: case no content
 	%ontent = xml:get_subtag(El, <<"content">>),
 	Content = El#xmlel.children,
-	Res = init_content([], Content, ConfId),
+	Res = init_content([], Content, ConfId, State),
 	?DEBUG("content= ~p ~p~n", [Content, Res]),
 
 	#iq{type=result, sub_el=[
@@ -156,17 +162,18 @@ do_route(From, To, #iq{xmlns=?NS_COLIBRI, sub_el=El}) when
 		}
 	]};
 
-do_route(_,_,IQ) ->
+do_route(_,_,IQ,_) ->
 	?DEBUG("videobridge: unknown message ~p~n", [IQ]),
 	#iq{type=error, sub_el=[jlib:make_error_element(<<"404">>, <<"unknown msg">>)]}.
 
 
-init_content(Acc, [], _) ->
+init_content(Acc, [], _, _) ->
 	Acc;
-init_content(Acc, [Content=#xmlel{name= <<"content">>, children=Chans}|T], ConfId) ->
+init_content(Acc, [Content=#xmlel{name= <<"content">>, children=Chans}|T], 
+             ConfId, State) ->
 	ContentType = xml:get_tag_attr_s(<<"name">>, Content),
 	?DEBUG("content= ~p~n", [ContentType]),
-	{Procs, Xmls} = do_channels([], [], Chans, {ConfId, ContentType}),
+	{Procs, Xmls} = do_channels([], [], Chans, {ConfId, ContentType}, State),
 	
 	%TODO: key must not exist !
 	ets:insert(videobridge_confs, {{ConfId, ContentType}, Procs}),
@@ -178,13 +185,13 @@ init_content(Acc, [Content=#xmlel{name= <<"content">>, children=Chans}|T], ConfI
 		[udprelay:addpeer(P, R) || R <- Recipients]
 	end, Procs),
 
-	init_content([Content#xmlel{children=Xmls}|Acc], T, ConfId);
-init_content(Acc, [_|T], ConfId) ->
-	init_content(Acc, T, ConfId).
+	init_content([Content#xmlel{children=Xmls}|Acc], T, ConfId, State);
+init_content(Acc, [_|T], ConfId, State) ->
+	init_content(Acc, T, ConfId, State).
 
-do_channels(Procs, Xmls, [],_) ->
+do_channels(Procs, Xmls, [],_,_) ->
 	{Procs, Xmls};
-do_channels(Procs, Xmls, [El=#xmlel{name= <<"channel">>}|T], Opts) ->
+do_channels(Procs, Xmls, [El=#xmlel{name= <<"channel">>}|T], Opts, State) ->
 	{Action, ChanId} = case xml:get_tag_attr_s(<<"id">>, El) of
 		<<"">> -> {allocate, undef};
 		Id     ->
@@ -194,15 +201,14 @@ do_channels(Procs, Xmls, [El=#xmlel{name= <<"channel">>}|T], Opts) ->
 				_       -> {update, Id}
 			end
 	end,
-	{Proc, Xml} = channel(Action, ChanId, Opts),
+	{Proc, Xml} = channel(Action, ChanId, Opts, State),
 	?DEBUG("channel proc= ~p~n", [Proc]),
-	do_channels([Proc|Procs], [Xml|Xmls], T, Opts);
-do_channels(Procs, Xmls,[_|T],Opts) ->
-	do_channels(Procs, Xmls, T, Opts).
+	do_channels([Proc|Procs], [Xml|Xmls], T, Opts, State);
+do_channels(Procs, Xmls,[_|T],Opts,State) ->
+	do_channels(Procs, Xmls, T, Opts,State).
 
-channel(allocate, undef, {ConfId, ContentType}) ->
+channel(allocate, undef, {ConfId, ContentType}, #state{public_ip=PublicIp}) ->
 	ChanId=random:uniform(9999),
-	Host = <<"0.0.0.0">>,
 	Rtpport=random:uniform(9999), 
 	?DEBUG("channel: alloc(~p)~n", [ChanId]),
 
@@ -216,14 +222,14 @@ channel(allocate, undef, {ConfId, ContentType}) ->
 		Proc,
 		#xmlel{name= <<"channel">>, attrs=[
 			{<<"id">>      , jlib:integer_to_binary(ChanId)},
-			{<<"host">>    , Host},
+			{<<"host">>    , PublicIp},
 			{<<"rtpport">> , jlib:integer_to_binary(Rtpport)},
 			{<<"rtcpport">>, jlib:integer_to_binary(Rtpport+1)},
 			{<<"expire">>  , <<"60">>}
 		]}
 	};
 
-channel(free    , ChanId, _)              ->
+channel(free    , ChanId, _, _)              ->
 	?DEBUG("channel: free(~p)~n", [ChanId]),
 	case ets:lookup(videobridge_channel, ChanId) of 
 		[{ChanId, Chan}] -> 
@@ -233,7 +239,7 @@ channel(free    , ChanId, _)              ->
 	end,
 	{xmlcdata,<<"">>};
 
-channel(update  , ChanId, _)              ->
+channel(update  , ChanId, _, _)              ->
 	?DEBUG("channel: update(~p)~n", [ChanId]),
 	update.
 
