@@ -15,6 +15,8 @@
 	 handle_cast/2, handle_info/2, code_change/3]).
 %%  - Hook callbacks
 -export([disco_items/5, disco_identity/5, disco_features/5]).
+% DEBUG
+-export([allocate_port/2]).
 
 
 -include("ejabberd.hrl").
@@ -74,6 +76,7 @@ init([Host, Opts]) ->
 	%
 	random:seed(),
 	ets:new(videobridge_confs, [bag,named_table,public]),
+	ets:new(videobridge_ports, [ordered_set,named_table,public]),
 
 	% discovery hooks
 	%mod_disco:register_feature(Host, ?NS_COLIBRI),
@@ -207,13 +210,15 @@ do_channels(Procs, Xmls, [El=#xmlel{name= <<"channel">>}|T], Opts, State) ->
 do_channels(Procs, Xmls,[_|T],Opts,State) ->
 	do_channels(Procs, Xmls, T, Opts,State).
 
-channel(allocate, undef, {ConfId, ContentType}, #state{public_ip=PublicIp}) ->
+channel(allocate, undef, {ConfId, ContentType}, #state{public_ip=PublicIp,rtp_range={Min,Max}}) ->
 	ChanId=random:uniform(9999),
-	Rtpport=random:uniform(9999), 
-	?DEBUG("channel: alloc(~p)~n", [ChanId]),
+	%TODO: handle false value (no more available ports)
+	RtpPort=allocate_port(Min,Max),
+	?DEBUG("channel: alloc(~p), port=~p~n", [ChanId,RtpPort]),
 
 	% channel udprelay proc is stored as a local gproc index 
-	{ok, Proc} = udprelay:start_link([{port,Rtpport},{controller,self()},{confid,ConfId}]),
+	{ok, Proc} = udprelay:start_link([{port,RtpPort},{controller,self()},{confid,ConfId}]),
+	ets:insert(videobridge_ports, {RtpPort, Proc}),
 
 	?DEBUG("videobridge: udprelay proc= ~p~n", [Proc]),
 	?DEBUG("key= {~p,~p}~n", [ConfId,ContentType]),
@@ -223,8 +228,8 @@ channel(allocate, undef, {ConfId, ContentType}, #state{public_ip=PublicIp}) ->
 		#xmlel{name= <<"channel">>, attrs=[
 			{<<"id">>      , jlib:integer_to_binary(ChanId)},
 			{<<"host">>    , PublicIp},
-			{<<"rtpport">> , jlib:integer_to_binary(Rtpport)},
-			{<<"rtcpport">>, jlib:integer_to_binary(Rtpport+1)},
+			{<<"rtpport">> , jlib:integer_to_binary(RtpPort)},
+			{<<"rtcpport">>, jlib:integer_to_binary(RtpPort+1)},
 			{<<"expire">>  , <<"60">>}
 		]}
 	};
@@ -256,3 +261,53 @@ terminate(_Reason, #state{host=Host}) ->
 	ejabberd_hooks:delete(disco_local_identity, Fqdn, ?MODULE, disco_identity, 42),
 	ejabberd_router:unregister_route(Fqdn).
 code_change(_OldVsn, State, _Extra) -> {ok, State}.
+
+%%%
+%%% UTILS
+%%%
+
+% allocate free RTP/RTCP ports
+%   - RTCP port is always following RTP port (RTP is even, RTCP=RTP+1 is odd)
+%   - successive allocated ports are random, not linear (help prevent attacks/mim)
+% 
+% The algorithm is 
+%   - choose a random even port, 
+%   - we get the close upper free port (looping from end to start of ports range)
+
+% REMARKS:
+%   - allocate_port/3 is internal
+%
+% @args
+%   - Min: range start - included (int)
+%   - Max: range end - included   (int)
+%
+% @return
+%   - false if no available free port
+%   - allocated port number (RTP) else
+allocate_port(Base, Cur, Base, _) when Base =< Cur+2 ->
+	false;
+allocate_port(Base, Cur, '$end_of_table', {Min,Max}) when Max > Cur+2 ->
+	Cur+2;
+allocate_port(Base, Cur, '$end_of_table', {Min,Max}) ->
+	allocate_port(Base,Min-2, ets:first(videobridge_ports), {Min,Max});
+allocate_port(Base, Cur, Next, Bounds) when Next > Cur+2 ->
+	Cur+2;
+allocate_port(Base, Cur, Next, Bounds) ->
+	allocate_port(Base,Next, ets:next(videobridge_ports, Next), Bounds).
+
+allocate_port(Min, Max) ->
+	Base = Min + (random:uniform((Max-Min) div 2) - 1) * 2,
+	% we get the next free port following Base
+	Port = case ets:lookup(videobridge_ports, Base) of
+		% not found : port is free
+		[] -> Base;
+		_  -> allocate_port(Base,Base,ets:next(videobridge_ports, Base),{Min,Max})
+	end,
+
+	case Port of
+		false -> false;
+		Any   -> ets:insert(videobridge_ports, {Any,true})
+	end,
+	?DEBUG("freeport: ~p/~p~n", [Base, Port]),
+	Port.
+
