@@ -81,12 +81,15 @@ handle_info(Req={udp,Sock,SrcIP,SrcPort,_}, State=#context{rtpsock=Sock,rtpsrc=u
 %	mod_videobridge:rtp_latching(Ctrl, ConfId, rtp, State2#context.rtpsrc, self())
 
 	handle_info(Req, State2);
-
 handle_info({udp,Sock,SrcIP,SrcPort,Packet}, State=#context{rtpsock=Sock,rtpsrc={SrcIP,SrcPort},recipients=Rcps})  ->
 	?DEBUG("udprelay: RTP packet received~n",[]),
 %	gen_udp:send(RtpSock,?,?,Packet),
 	[ udprelay:forward(R, {rtp, Packet}) || R <- Rcps ],
 
+	{noreply, State};
+% not matching sender
+handle_info({udp,Sock,SrcIP,SrcPort,Packet}, State=#context{rtpsock=Sock})  ->
+	?DEBUG("udprelay: received rogue RTP packet from ~p:~p~n~p~n",[SrcIP,SrcPort,Packet]),
 	{noreply, State};
 
 handle_info(Req={udp,Sock,SrcIP,SrcPort,Packet}, State=#context{rtcpsock=Sock,rtcpsrc=undef}) ->
@@ -95,6 +98,9 @@ handle_info(Req={udp,Sock,SrcIP,SrcPort,Packet}, State=#context{rtcpsock=Sock,rt
 handle_info({udp,Sock,SrcIP,SrcPort,Packet}, State=#context{rtcpsock=Sock,rtcpsrc={SrcIP,SrcPort},recipients=Rcps}) ->
 	?DEBUG("udprelay: RTP packet received~n",[]),
 	[ udprelay:forward(R, {rtp, Packet}) || R <- Rcps ],
+	{noreply, State};
+handle_info({udp,Sock,SrcIP,SrcPort,Packet}, State=#context{rtcpsock=Sock}) ->
+	?DEBUG("udprelay: received roghe RTCP packet from ~p:~p~n~p~n",[SrcIP,SrcPort,Packet]),
 	{noreply, State};
 
 handle_info(_Info, State) ->
