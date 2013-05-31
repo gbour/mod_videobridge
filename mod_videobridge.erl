@@ -143,7 +143,7 @@ do_route(From, To, IQ=#iq{type=get, xmlns=?NS_DISCO_INFO}, _) ->
 
 	mod_disco:process_local_iq_info(From, To, IQ);
 
-do_route(From, To, #iq{xmlns=?NS_COLIBRI, sub_el=El}, State) when
+do_route(From, To, #iq{id=Id, xmlns=?NS_COLIBRI, sub_el=El}, State) when
 		El#xmlel.name =:= <<"conference">> ->
 %		sub_el=#xmlel{name=<<"conference">>, attrs=Attrs, children=Elts}}) ->
 	?DEBUG("videobridge: conference query~n",[]),
@@ -158,7 +158,7 @@ do_route(From, To, #iq{xmlns=?NS_COLIBRI, sub_el=El}, State) when
 	Res = init_content([], Content, ConfId, State),
 	?DEBUG("content= ~p ~p~n", [Content, Res]),
 
-	#iq{type=result, sub_el=[
+	#iq{type=result, id=Id, sub_el=[
 		#xmlel{name= <<"conference">>, 
 			attrs=[{<<"xmlns">>, ?NS_COLIBRI}, {<<"id">>, ConfId}],
 			children=Res
