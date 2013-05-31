@@ -16,7 +16,7 @@
 %%  - Hook callbacks
 -export([disco_items/5, disco_identity/5, disco_features/5]).
 % DEBUG
--export([allocate_port/2]).
+-export([allocate_port/2, uuid/1, uuid/0]).
 
 
 -include("ejabberd.hrl").
@@ -149,8 +149,8 @@ do_route(From, To, #iq{xmlns=?NS_COLIBRI, sub_el=El}, State) when
 	?DEBUG("videobridge: conference query~n",[]),
 	%NOTE: if no id, ConfId == <<"">>
 	ConfId  = case xml:get_tag_attr_s(<<"id">>, El) of
-		<<"">> -> random:uniform(99999);
-		_Id    -> jlib:binary_to_integer(_Id)
+		<<"">> -> bin(uuid());
+		_Id    -> _Id
 	end,
 	%TODO: case no content
 	%ontent = xml:get_subtag(El, <<"content">>),
@@ -160,7 +160,7 @@ do_route(From, To, #iq{xmlns=?NS_COLIBRI, sub_el=El}, State) when
 
 	#iq{type=result, sub_el=[
 		#xmlel{name= <<"conference">>, 
-			attrs=[{<<"xmlns">>, ?NS_COLIBRI}, {<<"id">>, jlib:integer_to_binary(ConfId)}],
+			attrs=[{<<"xmlns">>, ?NS_COLIBRI}, {<<"id">>, ConfId}],
 			children=Res
 		}
 	]};
@@ -198,20 +198,20 @@ do_channels(Procs, Xmls, [El=#xmlel{name= <<"channel">>}|T], Opts, State) ->
 	{Action, ChanId} = case xml:get_tag_attr_s(<<"id">>, El) of
 		<<"">> -> {allocate, undef};
 		Id     ->
-			Id2 = jlib:binary_to_integer(Id),
 			case xml:get_tag_attr_s(<<"expire">>, El) of
 				<<"0">> -> {free, Id};
 				_       -> {update, Id}
 			end
 	end,
 	{Proc, Xml} = channel(Action, ChanId, Opts, State),
+	Xml2 = Xml#xmlel{children=El#xmlel.children},
 	?DEBUG("channel proc= ~p~n", [Proc]),
-	do_channels([Proc|Procs], [Xml|Xmls], T, Opts, State);
+	do_channels([Proc|Procs], [Xml2|Xmls], T, Opts, State);
 do_channels(Procs, Xmls,[_|T],Opts,State) ->
 	do_channels(Procs, Xmls, T, Opts,State).
 
 channel(allocate, undef, {ConfId, ContentType}, #state{public_ip=PublicIp,rtp_range={Min,Max}}) ->
-	ChanId=random:uniform(9999),
+	ChanId=uuid(),
 	%TODO: handle false value (no more available ports)
 	RtpPort=allocate_port(Min,Max),
 	?DEBUG("channel: alloc(~p), port=~p~n", [ChanId,RtpPort]),
@@ -226,7 +226,7 @@ channel(allocate, undef, {ConfId, ContentType}, #state{public_ip=PublicIp,rtp_ra
 	{
 		Proc,
 		#xmlel{name= <<"channel">>, attrs=[
-			{<<"id">>      , jlib:integer_to_binary(ChanId)},
+			{<<"id">>      , bin(ChanId)},
 			{<<"host">>    , PublicIp},
 			{<<"rtpport">> , jlib:integer_to_binary(RtpPort)},
 			{<<"rtcpport">>, jlib:integer_to_binary(RtpPort+1)},
@@ -311,3 +311,14 @@ allocate_port(Min, Max) ->
 	?DEBUG("freeport: ~p/~p~n", [Base, Port]),
 	Port.
 
+uuid(Len) ->
+	lists:map(fun(X) ->
+			B = random:uniform(16)-1,
+			if B < 10 -> B+48;
+        	   true   -> B+87
+			end
+		end, 
+		lists:seq(1, Len)
+	).
+uuid() ->
+	uuid(16).
