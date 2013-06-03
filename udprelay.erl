@@ -4,9 +4,23 @@
 
 -behaviour(gen_server).
 -export([start_link/1, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
--export([addpeer/2, forward/2]).
+-export([addpeer/2, forward/2, stats/1]).
 
 -include("ejabberd.hrl").
+
+-record(stat, {
+	count  = 0,
+	len    = 0,
+	gcount = 0,
+	glen   = 0
+}).
+
+-record(stats, {
+	rtp_recv  = #stat{},
+	rtp_send  = #stat{},
+	rtcp_recv = #stat{},
+	rtcp_send = #stat{}
+}).
 
 -record(context, {
 	controller,
@@ -16,7 +30,10 @@
 	rtcpsock,
 	rtpsrc=undef,
 	rtcpsrc=undef,
-	recipients=[]
+	recipients=[],
+
+	% stats: RTP, RTCP: total count, total len, step count, step len
+	stats=#stats{}
 }).
 
 start_link(Args) ->
@@ -51,6 +68,10 @@ addpeer(Self, Pid) ->
 
 forward(Pid, Packet) ->
 	gen_server:cast(Pid, {forward, Packet}).
+
+stats(Pid) ->
+	gen_server:call(Pid, stats).
+
 %rtpport(Self) ->
 	
 	
@@ -59,6 +80,12 @@ forward(Pid, Packet) ->
 handle_call({addpeer, Pid}, _, State=#context{recipients=R}) ->
 	?DEBUG("udprelay: add recipient ~p~n",[Pid]),
 	{reply, ok, State#context{recipients=[Pid|R]}};
+handle_call(stats, _, State=#context{port=Port,rtpsrc=RtpSrc,rtcpsrc=RtcpSrc,stats=Stats}) ->
+
+	{stat, Cnt,Len,GCnt,GLen} = Stats#stats.rtp_recv,
+	Stats2 = Stats#stats{rtp_recv={stat,0,0,GCnt+Cnt,GLen+Len}},
+	
+	{reply, {Port,RtpSrc,RtcpSrc,Stats}, State#context{stats=Stats2}};
 handle_call(_Req, _From, State) ->
 	?DEBUG("udprelay: handle_call ~p~n", [_Req]),
 	{noreply, State}.
@@ -91,12 +118,18 @@ handle_info(Req={udp,Sock,SrcIP,SrcPort,Packet},
 
 	State2 = State#context{rtpsrc={SrcIP,SrcPort}},
 	handle_info(Req, State2);
-handle_info({udp,Sock,SrcIP,SrcPort,Packet}, State=#context{rtpsock=Sock,rtpsrc={SrcIP,SrcPort},recipients=Rcps})  ->
+handle_info({udp,Sock,SrcIP,SrcPort,Packet},
+            State=#context{rtpsock=Sock,rtpsrc={SrcIP,SrcPort},recipients=Rcps,
+                           stats=Stats})  ->
 	?DEBUG("udprelay: RTP packet received~n",[]),
 %	gen_udp:send(RtpSock,?,?,Packet),
 	[ udprelay:forward(R, {rtp, Packet}) || R <- Rcps ],
 
-	{noreply, State};
+	% counting received packets and summing pkt len
+	{stat, Cnt,Len,GCnt,GLen} = Stats#stats.rtp_recv,
+	Stats2 = Stats#stats{rtp_recv={stat,Cnt+1,Len+size(Packet),GCnt,GLen}},
+
+	{noreply, State#context{stats=Stats2}};
 % not matching sender
 handle_info({udp,Sock,SrcIP,SrcPort,Packet}, State=#context{rtpsock=Sock})  ->
 	?DEBUG("udprelay: received rogue RTP packet from ~p:~p~n~p~n",[SrcIP,SrcPort,Packet]),

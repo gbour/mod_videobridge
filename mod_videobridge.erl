@@ -89,7 +89,9 @@ init([Host, Opts]) ->
 	%ejabberd_hooks:add(disco_sm_identity, Host, ?MODULE, disco_identity, 42),
 
 	ejabberd_router:register_route(Fqdn),
-	
+
+	% stats timer
+	erlang:start_timer(5000, self(), stats),	
 	{ok, #state{host=Host, public_ip=Ip, rtp_range={MinPort,MaxPort}}}.
 
 fqdn(Host) -> <<?SUBDOMAIN/binary, ".", Host/binary>>.
@@ -123,6 +125,27 @@ disco_identity(Acc, From, To, Node, Lang) ->
 
 disco_features(empty, From, To, Node, Lang) ->
 	{result, [?NS_DISCO_INFO, ?NS_COLIBRI]}.
+
+stats('$end_of_table') ->
+	ok;
+stats({ConfId, ContentType}) ->
+	?DEBUG(" . conf=~p (~p)~n", [ConfId,ContentType]),
+
+	[{_,_,Procs}] = ets:lookup(videobridge_confs, {ConfId,ContentType}),
+	lists:foreach(fun(P) ->
+			?DEBUG("proc= ~p~n", [udprelay:stats(P)])
+		end, Procs
+	),
+
+	ets:next(videobridge_confs, {ConfId, ContentType}).
+
+% stats timeout
+handle_info({timeout, _, stats}, State) ->
+	?DEBUG("*** VIDEOBRIDGE STATS ***~n", []),
+	stats(ets:first(videobridge_confs)),
+	
+	erlang:start_timer(5000, self(), stats),
+	{noreply, State};
 
 % handle received messages
 handle_info({route, From, To, Packet}, State) ->
