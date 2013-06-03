@@ -93,10 +93,10 @@ handle_info({udp,Sock,SrcIP,SrcPort,Packet}, State=#context{rtpsock=Sock})  ->
 	{noreply, State};
 
 handle_info(Req={udp,Sock,SrcIP,SrcPort,Packet}, State=#context{rtcpsock=Sock,rtcpsrc=undef}) ->
-	?DEBUG("urlrelay: RTP initiate latching ~p:~p~n", [SrcIP,SrcPort]),
-	handle_info(Req, State#context{rtpsrc={SrcIP,SrcPort}});
+	?DEBUG("urlrelay: RTCP initiate latching ~p:~p~n", [SrcIP,SrcPort]),
+	handle_info(Req, State#context{rtcpsrc={SrcIP,SrcPort}});
 handle_info({udp,Sock,SrcIP,SrcPort,Packet}, State=#context{rtcpsock=Sock,rtcpsrc={SrcIP,SrcPort},recipients=Rcps}) ->
-	?DEBUG("udprelay: RTP packet received~n",[]),
+	?DEBUG("udprelay: RTCP packet received~n",[]),
 	[ udprelay:forward(R, {rtp, Packet}) || R <- Rcps ],
 	{noreply, State};
 handle_info({udp,Sock,SrcIP,SrcPort,Packet}, State=#context{rtcpsock=Sock}) ->
