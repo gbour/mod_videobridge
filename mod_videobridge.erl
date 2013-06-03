@@ -14,7 +14,7 @@
 -export([init/1, terminate/2, handle_call/3,
 	 handle_cast/2, handle_info/2, code_change/3]).
 %%  - Hook callbacks
--export([disco_items/5, disco_identity/5, disco_features/5]).
+-export([disco_items/5, disco_identity/5, disco_features/5, notify/2]).
 % DEBUG
 -export([allocate_port/2, uuid/1, uuid/0]).
 
@@ -97,7 +97,9 @@ bin(Item) when is_binary(Item) ->
 	Item;
 bin(Item) when is_list(Item) ->
 	%io_lib:printable_list(Item) ->
-	erlang:list_to_binary(Item).
+	erlang:list_to_binary(Item);
+bin(Item) when is_integer(Item) ->
+	erlang:list_to_binary(erlang:integer_to_list(Item)).
 
 % items discovery hook: add handler
 %
@@ -155,7 +157,7 @@ do_route(From, To, #iq{id=Id, xmlns=?NS_COLIBRI, sub_el=El}, State) when
 	%TODO: case no content
 	%ontent = xml:get_subtag(El, <<"content">>),
 	Content = El#xmlel.children,
-	Res = init_content([], Content, ConfId, State),
+	Res = init_content([], Content, From, ConfId, State),
 	?DEBUG("content= ~p ~p~n", [Content, Res]),
 
 	#iq{type=result, id=Id, sub_el=[
@@ -170,16 +172,16 @@ do_route(_,_,IQ,_) ->
 	#iq{type=error, sub_el=[jlib:make_error_element(<<"404">>, <<"unknown msg">>)]}.
 
 
-init_content(Acc, [], _, _) ->
+init_content(Acc, [], _, _, _) ->
 	Acc;
 init_content(Acc, [Content=#xmlel{name= <<"content">>, children=Chans}|T], 
-             ConfId, State) ->
+             From, ConfId, State) ->
 	ContentType = xml:get_tag_attr_s(<<"name">>, Content),
-	?DEBUG("content= ~p~n", [ContentType]),
+	?DEBUG("content= ~p, from=~p~n", [ContentType, From]),
 	{Procs, Xmls} = do_channels([], [], Chans, {ConfId, ContentType}, State),
 	
 	%TODO: key must not exist !
-	ets:insert(videobridge_confs, {{ConfId, ContentType}, Procs}),
+	ets:insert(videobridge_confs, {{ConfId, ContentType}, From, Procs}),
 
 	% add udprelays each others as recipients
 	lists:foreach(fun(P) ->
@@ -188,9 +190,9 @@ init_content(Acc, [Content=#xmlel{name= <<"content">>, children=Chans}|T],
 		[udprelay:addpeer(P, R) || R <- Recipients]
 	end, Procs),
 
-	init_content([Content#xmlel{children=Xmls}|Acc], T, ConfId, State);
-init_content(Acc, [_|T], ConfId, State) ->
-	init_content(Acc, T, ConfId, State).
+	init_content([Content#xmlel{children=Xmls}|Acc], T, From, ConfId, State);
+init_content(Acc, [_|T], From, ConfId, State) ->
+	init_content(Acc, T, From, ConfId, State).
 
 do_channels(Procs, Xmls, [],_,_) ->
 	{Procs, Xmls};
@@ -218,7 +220,7 @@ channel(allocate, undef, {ConfId, ContentType}, #state{public_ip=PublicIp,rtp_ra
 
 	% channel udprelay proc is stored as a local gproc index 
 	{ok, Proc} = udprelay:start_link([{port,RtpPort},{controller,self()},{confid,ConfId}]),
-	ets:insert(videobridge_ports, {RtpPort, Proc}),
+	ets:insert(videobridge_ports, {RtpPort, Proc, ChanId, ConfId, ContentType}),
 
 	?DEBUG("videobridge: udprelay proc= ~p~n", [Proc]),
 	?DEBUG("key= {~p,~p}~n", [ConfId,ContentType]),
@@ -248,9 +250,43 @@ channel(update  , ChanId, _, _)              ->
 	?DEBUG("channel: update(~p)~n", [ChanId]),
 	update.
 
+
+
+notify(Pid, {latching, RtpPort, Ssrc}) ->
+	gen_server:cast(Pid, {latching, RtpPort, Ssrc}).
+
+
 %
 handle_call(stop, _From, State) ->
     {stop, normal, ok, State}.
+
+handle_cast({latching, RtpPort, Ssrc}, State=#state{host=Host,public_ip=Ip}) ->
+	case ets:lookup(videobridge_ports, RtpPort) of
+		[{RtpPort,Proc,ChanId,ConfId,ContentType}] ->
+			[{_, To,_}] = ets:lookup(videobridge_confs, {ConfId,ContentType}),
+			From = jlib:string_to_jid(fqdn(Host)),
+
+			Msg = #iq{type=set, id= <<"videobridge-",(bin(uuid(5)))/binary>>, sub_el=[
+				#xmlel{name= <<"conference">>, attrs=[
+						{<<"xmlns">>, ?NS_COLIBRI},
+						{<<"id">>   , bin(ConfId)}
+					],
+					children=[#xmlel{name= <<"content">>, attrs=[{<<"name">>, ContentType}], 
+						children=[#xmlel{name= <<"channel">>, attrs=[
+								{<<"id">>      , bin(ChanId)},
+								{<<"host">>    , Ip},
+								{<<"rtpport">> , jlib:integer_to_binary(RtpPort)},
+								{<<"rtcpport">>, jlib:integer_to_binary(RtpPort+1)},
+								{<<"expire">>  , <<"60">>}
+							],
+							children=[#xmlel{name= <<"ssrc">>, children=[{xmlcdata, bin(Ssrc)}]}]
+				}]}]}]},
+
+			ejabberd_router:route(From, To, jlib:iq_to_xml(Msg));
+		_ -> fail
+	end,
+	
+	{noreply, State};
 handle_cast(_Msg, State) -> {noreply, State}.
 
 terminate(_Reason, #state{host=Host}) ->

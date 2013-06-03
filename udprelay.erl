@@ -11,6 +11,7 @@
 -record(context, {
 	controller,
 	confid,
+	port,
 	rtpsock,
 	rtcpsock,
 	rtpsrc=undef,
@@ -32,7 +33,9 @@ init(Opts) ->
 		{ok, RtpSock}   -> 
 			case gen_udp:open(Port+1, [binary,{active,true},{reuseaddr,true}]) of
 				{ok, RtcpSock} ->
-					{ok, #context{controller=Ctrl, confid=ConfId, rtpsock=RtpSock, rtcpsock=RtcpSock}};
+					{ok, #context{controller=Ctrl, confid=ConfId, port=Port, 
+							rtpsock=RtpSock, rtcpsock=RtcpSock}
+					};
 				{error, Reason} ->
 					gen_udp:close(RtpSock),
 					{stop, Reason}
@@ -75,11 +78,18 @@ handle_cast(_Req, State) ->
 	{noreply, State}.
 
 % timeout, system msg
-handle_info(Req={udp,Sock,SrcIP,SrcPort,_}, State=#context{rtpsock=Sock,rtpsrc=undef}) ->
+handle_info(Req={udp,Sock,SrcIP,SrcPort,Packet},
+			State=#context{controller=Ctrl,port=Port,rtpsock=Sock,rtpsrc=undef}) ->
 	?DEBUG("urlrelay: RTP initiate latching ~p:~p~n", [SrcIP,SrcPort]),
-	State2 = State#context{rtpsrc={SrcIP,SrcPort}},
-%	mod_videobridge:rtp_latching(Ctrl, ConfId, rtp, State2#context.rtpsrc, self())
 
+	% decoding RTP packet
+	<<Version:2, _X1:7, Pt:7, Seq:16, Stamp:32, Ssrc:32, _X2/binary>> = Packet,
+	?DEBUG("vers= ~p, payload=~p, seq=~p, stamp=~p, ssrc=~p~n", [Version,Pt,Seq,Stamp,Ssrc]),
+
+	% async: notifying conference initiator
+	mod_videobridge:notify(Ctrl, {latching, Port, Ssrc}),
+
+	State2 = State#context{rtpsrc={SrcIP,SrcPort}},
 	handle_info(Req, State2);
 handle_info({udp,Sock,SrcIP,SrcPort,Packet}, State=#context{rtpsock=Sock,rtpsrc={SrcIP,SrcPort},recipients=Rcps})  ->
 	?DEBUG("udprelay: RTP packet received~n",[]),
