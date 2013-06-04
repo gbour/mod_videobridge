@@ -25,7 +25,8 @@
 -record(context, {
 	controller,
 	confid,
-	port,
+	chanid,
+	baseport,
 	rtpsock,
 	rtcpsock,
 	rtpsrc=undef,
@@ -43,6 +44,7 @@ init(Opts) ->
 	Port = proplists:get_value(port,Opts),
 	Ctrl = proplists:get_value(controller,Opts),
 	ConfId = proplists:get_value(confid, Opts),
+	ChanId = proplists:get_value(chanid, Opts),
 	?DEBUG("udprelay:init :: opening udp socket on ~p port. Controller= ~p, conf=~p~n", [Port, Ctrl, ConfId]),
 
 	% open RTP port
@@ -50,7 +52,8 @@ init(Opts) ->
 		{ok, RtpSock}   -> 
 			case gen_udp:open(Port+1, [binary,{active,true},{reuseaddr,true}]) of
 				{ok, RtcpSock} ->
-					{ok, #context{controller=Ctrl, confid=ConfId, port=Port, 
+					{ok, #context{controller=Ctrl, confid=ConfId, chanid=ChanId, 
+							baseport=Port, 
 							rtpsock=RtpSock, rtcpsock=RtcpSock}
 					};
 				{error, Reason} ->
@@ -80,12 +83,20 @@ stats(Pid) ->
 handle_call({addpeer, Pid}, _, State=#context{recipients=R}) ->
 	?DEBUG("udprelay: add recipient ~p~n",[Pid]),
 	{reply, ok, State#context{recipients=[Pid|R]}};
-handle_call(stats, _, State=#context{port=Port,rtpsrc=RtpSrc,rtcpsrc=RtcpSrc,stats=Stats}) ->
-
+handle_call(stats, _, State) ->
+	#context{chanid=ChanId, baseport=Port, rtpsrc=RtpSrc, rtcpsrc=RtcpSrc,
+		stats=Stats
+	} = State,
 	{stat, Cnt,Len,GCnt,GLen} = Stats#stats.rtp_recv,
 	Stats2 = Stats#stats{rtp_recv={stat,0,0,GCnt+Cnt,GLen+Len}},
 	
-	{reply, {Port,RtpSrc,RtcpSrc,Stats}, State#context{stats=Stats2}};
+	{reply, [
+		{chanid  , ChanId},
+		{baseport, Port},
+		{rtpsrc  , RtpSrc},
+		{rtcpsrc , RtcpSrc},
+		{stats   , Stats}], State#context{stats=Stats2}};
+
 handle_call(_Req, _From, State) ->
 	?DEBUG("udprelay: handle_call ~p~n", [_Req]),
 	{noreply, State}.
@@ -106,7 +117,7 @@ handle_cast(_Req, State) ->
 
 % timeout, system msg
 handle_info(Req={udp,Sock,SrcIP,SrcPort,Packet},
-			State=#context{controller=Ctrl,port=Port,rtpsock=Sock,rtpsrc=undef}) ->
+			State=#context{controller=Ctrl,baseport=Port,rtpsock=Sock,rtpsrc=undef}) ->
 	?DEBUG("urlrelay: RTP initiate latching ~p:~p~n", [SrcIP,SrcPort]),
 
 	% decoding RTP packet
@@ -127,7 +138,7 @@ handle_info({udp,Sock,SrcIP,SrcPort,Packet},
 
 	% counting received packets and summing pkt len
 	{stat, Cnt,Len,GCnt,GLen} = Stats#stats.rtp_recv,
-	Stats2 = Stats#stats{rtp_recv={stat,Cnt+1,Len+size(Packet),GCnt,GLen}},
+	Stats2 = Stats#stats{rtp_recv={stat,Cnt+1,Len+byte_size(Packet),GCnt,GLen}},
 
 	{noreply, State#context{stats=Stats2}};
 % not matching sender

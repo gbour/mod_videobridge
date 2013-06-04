@@ -14,13 +14,14 @@
 -export([init/1, terminate/2, handle_call/3,
 	 handle_cast/2, handle_info/2, code_change/3]).
 %%  - Hook callbacks
--export([disco_items/5, disco_identity/5, disco_features/5, notify/2]).
+-export([disco_items/5, disco_identity/5, disco_features/5, notify/2, stats/0]).
 % DEBUG
 -export([allocate_port/2, uuid/1, uuid/0]).
 
 
 -include("ejabberd.hrl").
 -include("jlib.hrl").
+-include("ejabberd_commands.hrl").
 
 -define(SUPERVISOR, ejabberd_sup).
 -define(SUBDOMAIN, <<"jitsi-videobridge">>).
@@ -91,7 +92,8 @@ init([Host, Opts]) ->
 	ejabberd_router:register_route(Fqdn),
 
 	% stats timer
-	erlang:start_timer(5000, self(), stats),	
+	%erlang:start_timer(5000, self(), stats),
+	ejabberd_commands:register_commands(commands()),
 	{ok, #state{host=Host, public_ip=Ip, rtp_range={MinPort,MaxPort}}}.
 
 fqdn(Host) -> <<?SUBDOMAIN/binary, ".", Host/binary>>.
@@ -126,26 +128,69 @@ disco_identity(Acc, From, To, Node, Lang) ->
 disco_features(empty, From, To, Node, Lang) ->
 	{result, [?NS_DISCO_INFO, ?NS_COLIBRI]}.
 
-stats('$end_of_table') ->
-	ok;
-stats({ConfId, ContentType}) ->
-	?DEBUG(" . conf=~p (~p)~n", [ConfId,ContentType]),
+commands() ->
+	[#ejabberd_commands{name = videobridge_stats,
+		tags = [stats],
+		desc = 
+			"Rtprelay statistics for mod_videobridge",
+		module = ?MODULE, function = stats,
+		args = [], result = {stats, string}}].
 
-	[{_,_,Procs}] = ets:lookup(videobridge_confs, {ConfId,ContentType}),
-	lists:foreach(fun(P) ->
-			?DEBUG("proc= ~p~n", [udprelay:stats(P)])
+
+%
+% Convert bytes to the highest smallest unit
+% . 1024b -> 1kb
+%
+unit(X) when X >= 1048576 ->
+	{X div 1048576, mbytes};
+unit(X) when X >= 1024 ->
+	{X div 1024, kbytes};
+unit(X) ->
+	{X, bytes}.
+
+stats() ->
+	iolist_to_binary(stats([], ets:first(videobridge_confs))).
+
+stats({peer, {Ip,Port}}) ->
+	[" connected to ",inet_parse:ntoa(Ip),":",bin(Port)];
+stats({peer, _}) ->
+	" -not connected-";
+
+stats({stat,Cnt,Len,GCnt,GLen}) ->
+	{XLen , XUnit}  = unit(Len),
+	{XGLen, XGUnit} = unit(GLen+Len),
+
+	[bin(Cnt)     , " pkts, ",bin(XLen), " ",atom_to_list(XUnit)," / ",
+	 bin(GCnt+Cnt), " pkts, ",bin(XGLen)," ",atom_to_list(XGUnit)].
+
+stats([], '$end_of_table') ->
+	" -*- no active conferences -*-";
+stats(Acc, '$end_of_table') ->
+	Acc;
+stats(Acc, Key={ConfId, ContentType}) ->
+	Hdr = ["- conference (id=",ConfId,", type=", ContentType,"):"],
+
+	[{_,_,Procs}] = ets:lookup(videobridge_confs, Key),
+	Ctnt = lists:map(fun(P) ->
+			Stats = udprelay:stats(P),
+			Port  = proplists:get_value(baseport,Stats),
+
+			RtpConn  = stats({peer, proplists:get_value(rtpsrc,Stats)}),
+			RtcpConn = stats({peer, proplists:get_value(rtcpsrc,Stats)}),
+
+			{stats,Rtprcv,Rtpsnd,Rtcprcv,Rtcpsnd} = proplists:get_value(stats,Stats),
+				
+			["  . channel #", proplists:get_value(chanid,Stats),":",$\n,
+			 "    - rtp  port#",bin(Port),RtpConn,$\n,
+			 "      . recv: ", stats(Rtprcv),$\n,
+			 "      . send: ", stats(Rtpsnd),$\n,
+			 "    - rtcp port#",bin(Port+1),RtcpConn,$\n
+			]
 		end, Procs
 	),
 
-	ets:next(videobridge_confs, {ConfId, ContentType}).
+	stats([Acc,$\n,Hdr,$\n,Ctnt], ets:next(videobridge_confs, Key)).
 
-% stats timeout
-handle_info({timeout, _, stats}, State) ->
-	?DEBUG("*** VIDEOBRIDGE STATS ***~n", []),
-	stats(ets:first(videobridge_confs)),
-	
-	erlang:start_timer(5000, self(), stats),
-	{noreply, State};
 
 % handle received messages
 handle_info({route, From, To, Packet}, State) ->
@@ -242,7 +287,12 @@ channel(allocate, undef, {ConfId, ContentType}, #state{public_ip=PublicIp,rtp_ra
 	?DEBUG("channel: alloc(~p), port=~p~n", [ChanId,RtpPort]),
 
 	% channel udprelay proc is stored as a local gproc index 
-	{ok, Proc} = udprelay:start_link([{port,RtpPort},{controller,self()},{confid,ConfId}]),
+	{ok, Proc} = udprelay:start_link([
+		{port,RtpPort},
+		{controller,self()},
+		{confid,ConfId},
+		{chanid,ChanId}
+	]),
 	ets:insert(videobridge_ports, {RtpPort, Proc, ChanId, ConfId, ContentType}),
 
 	?DEBUG("videobridge: udprelay proc= ~p~n", [Proc]),
