@@ -149,10 +149,16 @@ handle_info({udp,Sock,SrcIP,SrcPort,Packet}, State=#context{rtpsock=Sock})  ->
 handle_info(Req={udp,Sock,SrcIP,SrcPort,Packet}, State=#context{rtcpsock=Sock,rtcpsrc=undef}) ->
 	?DEBUG("urlrelay: RTCP initiate latching ~p:~p~n", [SrcIP,SrcPort]),
 	handle_info(Req, State#context{rtcpsrc={SrcIP,SrcPort}});
-handle_info({udp,Sock,SrcIP,SrcPort,Packet}, State=#context{rtcpsock=Sock,rtcpsrc={SrcIP,SrcPort},recipients=Rcps}) ->
+handle_info({udp,Sock,SrcIP,SrcPort,Packet}, 
+            State=#context{rtcpsock=Sock,rtcpsrc={SrcIP,SrcPort},recipients=Rcps,stats=Stats}) ->
 	?DEBUG("udprelay: RTCP packet received~n",[]),
 	[ udprelay:forward(R, {rtp, Packet}) || R <- Rcps ],
-	{noreply, State};
+
+	% counting received packets and summing pkt len
+	{stat, Cnt,Len,GCnt,GLen} = Stats#stats.rtcp_recv,
+	Stats2 = Stats#stats{rtcp_recv={stat,Cnt+1,Len+byte_size(Packet),GCnt,GLen}},
+
+	{noreply, State#context{stats=Stats2}};
 handle_info({udp,Sock,SrcIP,SrcPort,Packet}, State=#context{rtcpsock=Sock}) ->
 	?DEBUG("udprelay: received roghe RTCP packet from ~p:~p~n~p~n",[SrcIP,SrcPort,Packet]),
 	{noreply, State};
