@@ -84,11 +84,17 @@ handle_call({addpeer, Pid}, _, State=#context{recipients=R}) ->
 	?DEBUG("udprelay: add recipient ~p~n",[Pid]),
 	{reply, ok, State#context{recipients=[Pid|R]}};
 handle_call(stats, _, State) ->
-	#context{chanid=ChanId, baseport=Port, rtpsrc=RtpSrc, rtcpsrc=RtcpSrc,
-		stats=Stats
-	} = State,
-	{stat, Cnt,Len,GCnt,GLen} = Stats#stats.rtp_recv,
-	Stats2 = Stats#stats{rtp_recv={stat,0,0,GCnt+Cnt,GLen+Len}},
+	#context{chanid=ChanId, baseport=Port, rtpsrc=RtpSrc, rtcpsrc=RtcpSrc, stats=Stats} = State,
+
+	#stats{rtp_recv=RtpRecv, rtp_send=RtpSend, rtcp_recv=RtcpRecv, rtcp_send=RtcpSend} = Stats,
+
+	Clear = fun({stat, Cnt,Len,GCnt,GLen}) -> {stat,0,0,GCnt+Cnt,GLen+Len} end,
+	Stats2 = #stats{
+		rtp_recv =Clear(RtpRecv),
+		rtp_send =Clear(RtpSend),
+		rtcp_recv=Clear(RtcpRecv),
+		rtcp_send=Clear(RtcpSend)
+	},
 	
 	{reply, [
 		{chanid  , ChanId},
@@ -103,20 +109,26 @@ handle_call(_Req, _From, State) ->
 
 % async request
 % forward RTP/RTCP packet to peers
-forward(Sock, {Ip,Port}, Packet) ->
+forward(Sock, {Ip,Port}, Packet, {stat,Cnt,Len,GCnt,GLen}) ->
 	case gen_udp:send(Sock, Ip, Port, Packet) of
 		{error,Reason} ->
 			?DEBUG("udprelay:forward= fail (~p)~n", [Reason]);
 		_ -> ok
-	end.
-handle_cast({forward, {rtp, Packet}}, State=#context{rtpsock=Sock,rtpsrc={Ip,Port}}) ->
+	end,
+
+	{stat,Cnt+1,Len+byte_size(Packet),GCnt,GLen}.
+handle_cast({forward, {rtp, Packet}}, State=#context{rtpsock=Sock,rtpsrc={Ip,Port},stats=Stats}) ->
 	%?DEBUG("udprelay: relay to ~p:~p~n", [Ip, Port]),
-	forward(Sock, {Ip,Port}, Packet),
-	{noreply, State};
-handle_cast({forward, {rtcp, Packet}}, State=#context{rtcpsock=Sock,rtcpsrc={Ip,Port}}) ->
+	RtpStats = forward(Sock, {Ip,Port}, Packet, Stats#stats.rtp_send),
+	Stats2 = Stats#stats{rtp_send=RtpStats},
+
+	{noreply, State#context{stats=Stats2}};
+handle_cast({forward, {rtcp, Packet}}, State=#context{rtcpsock=Sock,rtcpsrc={Ip,Port},stats=Stats}) ->
 	%?DEBUG("udprelay: relay to ~p:~p~n", [Ip, Port]),
-	forward(Sock, {Ip,Port}, Packet),
-	{noreply, State};
+	RtcpStats = forward(Sock, {Ip,Port}, Packet, Stats#stats.rtcp_send),
+	Stats2    = Stats#stats{rtcp_send=RtcpStats},
+
+	{noreply, State#context{stats=Stats2}};
 
 handle_cast(_Req, State) ->
 	?DEBUG("udprelay: handle_cast ~p (state= ~p)~n", [_Req, State]),
