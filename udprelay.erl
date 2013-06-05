@@ -102,13 +102,20 @@ handle_call(_Req, _From, State) ->
 	{noreply, State}.
 
 % async request
-handle_cast({forward, {rtp, Packet}}, State=#context{rtpsock=Sock,rtpsrc={Ip,Port}}) ->
-	?DEBUG("udprelay: relay to ~p:~p~n", [Ip, Port]),
+% forward RTP/RTCP packet to peers
+forward(Sock, {Ip,Port}, Packet) ->
 	case gen_udp:send(Sock, Ip, Port, Packet) of
 		{error,Reason} ->
 			?DEBUG("udprelay:forward= fail (~p)~n", [Reason]);
 		_ -> ok
-	end,
+	end.
+handle_cast({forward, {rtp, Packet}}, State=#context{rtpsock=Sock,rtpsrc={Ip,Port}}) ->
+	%?DEBUG("udprelay: relay to ~p:~p~n", [Ip, Port]),
+	forward(Sock, {Ip,Port}, Packet),
+	{noreply, State};
+handle_cast({forward, {rtcp, Packet}}, State=#context{rtcpsock=Sock,rtcpsrc={Ip,Port}}) ->
+	%?DEBUG("udprelay: relay to ~p:~p~n", [Ip, Port]),
+	forward(Sock, {Ip,Port}, Packet),
 	{noreply, State};
 
 handle_cast(_Req, State) ->
@@ -152,7 +159,7 @@ handle_info(Req={udp,Sock,SrcIP,SrcPort,Packet}, State=#context{rtcpsock=Sock,rt
 handle_info({udp,Sock,SrcIP,SrcPort,Packet}, 
             State=#context{rtcpsock=Sock,rtcpsrc={SrcIP,SrcPort},recipients=Rcps,stats=Stats}) ->
 	?DEBUG("udprelay: RTCP packet received~n",[]),
-	[ udprelay:forward(R, {rtp, Packet}) || R <- Rcps ],
+	[ udprelay:forward(R, {rtcp, Packet}) || R <- Rcps ],
 
 	% counting received packets and summing pkt len
 	{stat, Cnt,Len,GCnt,GLen} = Stats#stats.rtcp_recv,
