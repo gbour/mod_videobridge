@@ -218,9 +218,9 @@ do_route(From, To, #iq{id=Id, xmlns=?NS_COLIBRI, sub_el=El}, State) when
 %		sub_el=#xmlel{name=<<"conference">>, attrs=Attrs, children=Elts}}) ->
 	?DEBUG("videobridge: conference query~n",[]),
 	%NOTE: if no id, ConfId == <<"">>
-	ConfId  = case xml:get_tag_attr_s(<<"id">>, El) of
-		<<"">> -> bin(uuid());
-		_Id    -> _Id
+	{Op, ConfId}  = case xml:get_tag_attr_s(<<"id">>, El) of
+		<<"">> -> {create, bin(uuid())};
+		_Id    -> {append, _Id}
 	end,
 	%TODO: case no content
 	%ontent = xml:get_subtag(El, <<"content">>),
@@ -246,17 +246,27 @@ init_content(Acc, [Content=#xmlel{name= <<"content">>, children=Chans}|T],
              From, ConfId, State) ->
 	ContentType = xml:get_tag_attr_s(<<"name">>, Content),
 	?DEBUG("content= ~p, from=~p~n", [ContentType, From]),
-	{Procs, Xmls} = do_channels([], [], Chans, {ConfId, ContentType}, State),
+	{Procs2, Xmls} = do_channels([], [], Chans, {ConfId, ContentType}, State),
 	
-	%TODO: key must not exist !
+	% NOTE: if the conference still exists, we merge udprelay procs
+	Procs1 = case ets:lookup(videobridge_confs, {ConfId,ContentType}) of
+		[{_,_,P}] -> P;
+		_         -> []
+	end,
+	Procs = lists:merge(Procs1,Procs2),
 	ets:insert(videobridge_confs, {{ConfId, ContentType}, From, Procs}),
 
 	% add udprelays each others as recipients
+	% All "old" procs must relay to new ones
+	lists:foreach(fun(P) ->
+		[udprelay:addpeer(P,R) || R <- Procs2]
+	end, Procs1),
+	% All "new" procs must relay to both olds and news
 	lists:foreach(fun(P) ->
 		% all but P
 		Recipients = lists:filter(fun(X) -> X =/= P end, Procs),
 		[udprelay:addpeer(P, R) || R <- Recipients]
-	end, Procs),
+	end, Procs2),
 
 	init_content([Content#xmlel{children=Xmls}|Acc], T, From, ConfId, State);
 init_content(Acc, [_|T], From, ConfId, State) ->
