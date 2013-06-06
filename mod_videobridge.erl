@@ -76,7 +76,7 @@ init([Host, Opts]) ->
 
 	%
 	random:seed(),
-	ets:new(videobridge_confs, [bag,named_table,public]),
+	ets:new(videobridge_confs, [set,named_table,public]),
 	ets:new(videobridge_ports, [ordered_set,named_table,public]),
 
 	% discovery hooks
