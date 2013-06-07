@@ -4,7 +4,7 @@
 
 -behaviour(gen_server).
 -export([start_link/1, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
--export([addpeer/2, forward/2, stats/1]).
+-export([addpeer/2, delpeer/2, forward/2, stats/1, shutdown/1]).
 
 -include("ejabberd.hrl").
 
@@ -68,6 +68,8 @@ init(Opts) ->
 
 addpeer(Self, Pid) ->
 	gen_server:call(Self, {addpeer,Pid}).
+delpeer(Pid, Peer) ->
+	gen_server:call(Pid, {delpeer, Peer}).
 
 forward(Pid, Packet) ->
 	gen_server:cast(Pid, {forward, Packet}).
@@ -75,14 +77,21 @@ forward(Pid, Packet) ->
 stats(Pid) ->
 	gen_server:call(Pid, stats).
 
+shutdown(Pid) ->
+	gen_server:call(Pid, shutdown).
 %rtpport(Self) ->
 	
 	
 
 % sync request
+handle_call(shutdown, _, State) ->
+	{stop, normal, ok, State};
 handle_call({addpeer, Pid}, _, State=#context{recipients=R}) ->
 	?DEBUG("udprelay: add recipient ~p~n",[Pid]),
 	{reply, ok, State#context{recipients=[Pid|R]}};
+handle_call({delpeer, Pid}, _, State=#context{recipients=R}) ->
+	?DEBUG("udprelay: del recipient ~p~n", [Pid]),
+	{reply, ok, State#context{recipients=lists:delete(Pid, R)}};
 handle_call(stats, _, State) ->
 	#context{chanid=ChanId, baseport=Port, rtpsrc=RtpSrc, rtcpsrc=RtcpSrc, stats=Stats} = State,
 

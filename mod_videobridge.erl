@@ -254,7 +254,12 @@ init_content(Acc, [Content=#xmlel{name= <<"content">>, children=Chans}|T],
 		_         -> []
 	end,
 	Procs = lists:merge(Procs1,Procs2),
-	ets:insert(videobridge_confs, {{ConfId, ContentType}, From, Procs}),
+	case length(Procs) of
+		% drop conference with no channels
+		0 -> ets:delete(videobridge_confs, {ConfId,ContentType});
+		% insert or update
+		_ -> ets:insert(videobridge_confs, {{ConfId, ContentType}, From, Procs})
+	end,
 
 	% add udprelays each others as recipients
 	% All "old" procs must relay to new ones
@@ -284,14 +289,22 @@ do_channels(Procs, Xmls, [El=#xmlel{name= <<"channel">>}|T], Opts, State) ->
 			end
 	end,
 	{Proc, Xml} = channel(Action, ChanId, Opts, State),
-	Xml2 = Xml#xmlel{children=El#xmlel.children},
+	Procs2 = if
+		Proc =:= none -> Procs;
+		true          -> [Proc|Procs]
+	end,
+	Xmls2 = if 
+		Xml =:= none -> Xmls;
+		true         -> [Xml#xmlel{children=El#xmlel.children}|Xmls]
+	end,
+
 	?DEBUG("channel proc= ~p~n", [Proc]),
-	do_channels([Proc|Procs], [Xml2|Xmls], T, Opts, State);
+	do_channels(Procs2, Xmls2, T, Opts, State);
 do_channels(Procs, Xmls,[_|T],Opts,State) ->
 	do_channels(Procs, Xmls, T, Opts,State).
 
 channel(allocate, undef, {ConfId, ContentType}, #state{public_ip=PublicIp,rtp_range={Min,Max}}) ->
-	ChanId=uuid(),
+	ChanId=bin(uuid()),
 	%TODO: handle false value (no more available ports)
 	RtpPort=allocate_port(Min,Max),
 	?DEBUG("channel: alloc(~p), port=~p~n", [ChanId,RtpPort]),
@@ -319,15 +332,24 @@ channel(allocate, undef, {ConfId, ContentType}, #state{public_ip=PublicIp,rtp_ra
 		]}
 	};
 
-channel(free    , ChanId, _, _)              ->
-	?DEBUG("channel: free(~p)~n", [ChanId]),
-	case ets:lookup(videobridge_channel, ChanId) of 
-		[{ChanId, Chan}] -> 
-			ets:delete(videobridge_channel, ChanId);
-		_                -> 
-			?DEBUG("channel(free): ERROR, ~p channel not found~n", [ChanId])
+channel(free, ChanId, {ConfId, ContentType}, _)              ->
+	?DEBUG("channel: freeing channel #~p / ~p  / ~p~n", [ChanId,ConfId,ContentType]),
+	case ets:match_object(videobridge_ports, {'_','_',ChanId,ConfId,ContentType}) of
+		[{RtpPort, Proc, ChanId, ConfId, ContentType}] ->
+			?DEBUG("channl: find ets entry: confid=~p, ctype=~p, proc=~p", [ConfId, ContentType, Proc]),
+			[{_,From,Peers}] = ets:lookup(videobridge_confs, {ConfId,ContentType}),
+			[ udprelay:delpeer(P, Proc) || P <- Peers],
+			ets:insert(videobridge_confs, {{ConfId,ContentType},From,lists:delete(Proc,Peers)}),
+
+			catch udprelay:shutdown(Proc),
+			?DEBUG("channel: deleting ets entry. rtpport= ~p~n", [RtpPort]),
+			ets:delete(videobridge_ports, RtpPort),
+			ok;
+		_ ->
+			fail
 	end,
-	{xmlcdata,<<"">>};
+
+	{none,none};
 
 channel(update  , ChanId, _, _)              ->
 	?DEBUG("channel: update(~p)~n", [ChanId]),
