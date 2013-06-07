@@ -3,7 +3,7 @@
 ## Discovery
 
 Client request Server capabilities:
-``̀`xml
+```xml
 <iq xmlns="jabber:client" to="xmpp.org" type="get" id="47">
   <query xmlns="http://jabber.org/protocol/disco#items" />
 </iq>
@@ -19,9 +19,9 @@ Server returns capabilities as items, including **jitsi-videobridge** service:
     <item jid='vjud.xmpp.org'/>
 </query>
 </iq>
-``̀ 
+```
 
-Client as details about *videobridge* service:
+Client ask details about *videobridge* service:
 ```xml
 <iq xmlns="jabber:client" to="jitsi-videobridge.bour.cc" type="get" id="50">
   <query xmlns="http://jabber.org/protocol/disco#info" />
@@ -29,7 +29,7 @@ Client as details about *videobridge* service:
 ```
 
 Server returns *videobridge* identity+features:
-``̀ xml
+```xml
 <iq from='jitsi-videobridge.bour.cc' to='gajim2@bour.cc/Gajim' type='result' id='50'>
   <query xmlns='http://jabber.org/protocol/disco#info'>
     <identity category='component' type='conference' name='EjabberdVideoBridge'/>

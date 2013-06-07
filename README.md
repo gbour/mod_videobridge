@@ -20,7 +20,7 @@ Edit /etc/ejabberd/ejabberd.cfg and add module configuration
   {mod_videobridge, [
                      {public_ip, "192.168.0.1"},
                      {rtp_range, {10000-20000}}
-                    ]}.
+                    ]}
 }.
 ```
 
