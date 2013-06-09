@@ -149,14 +149,27 @@ handle_info(Req={udp,Sock,SrcIP,SrcPort,Packet},
 	?DEBUG("urlrelay: RTP initiate latching ~p:~p~n", [SrcIP,SrcPort]),
 
 	% decoding RTP packet
-	<<Version:2, _X1:7, Pt:7, Seq:16, Stamp:32, Ssrc:32, _X2/binary>> = Packet,
-	?DEBUG("vers= ~p, payload=~p, seq=~p, stamp=~p, ssrc=~p~n", [Version,Pt,Seq,Stamp,Ssrc]),
+	State3 = case Packet of
+		<<Version:2, _X1:7, Pt:7, Seq:16, Stamp:32, Ssrc:32, _X2/binary>> ->
+			?DEBUG("vers= ~p, payload=~p, seq=~p, stamp=~p, ssrc=~p~n", [Version,Pt,Seq,Stamp,Ssrc]),
 
-	% async: notifying conference initiator
-	mod_videobridge:notify(Ctrl, {latching, Port, Ssrc}),
+			% async: notifying conference initiator
+			mod_videobridge:notify(Ctrl, {latching, Port, Ssrc}),
+			{noreply, State2} = handle_info(Req, State#context{rtpsrc={SrcIP,SrcPort}}),
+			State2;
 
-	State2 = State#context{rtpsrc={SrcIP,SrcPort}},
-	handle_info(Req, State2);
+		% empty packet - set latching, but don't forward
+		<<>> ->
+			?DEBUG("udprelay: receive empty packet~n",[]),
+			State#context{rtpsrc={SrcIP,SrcPort}};
+
+		% any other value
+		_    ->
+			?DEBUG("udprelay: invalid RTP packet. IGNORING~n", []),
+			State
+	end,
+
+	{noreply, State3};
 handle_info({udp,Sock,SrcIP,SrcPort,Packet},
             State=#context{rtpsock=Sock,rtpsrc={SrcIP,SrcPort},recipients=Rcps,
                            stats=Stats})  ->
