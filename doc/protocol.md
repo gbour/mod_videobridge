@@ -64,8 +64,36 @@ Client ask server to create a videobridge:
 </iq>
 ```
 
+Server allocate RTP and RTCP ports for each channel:
+```xml
+<iq type="result" id="52" from="jitsi-videobridge.xmpp.org" to="alice@xmpp.org/jitsi">
+  <conference xmlns="http://jitsi.org/protocol/colibri" id="82671f14104256bb">
+    <content name="audio">
+      <channel id="f24bb8fd74e5ee83" host="275.32.1.47" rtpport="10014" rtcpport="10015" expire="60"/>
+      <channel id="a453c450091b3325" host="275.32.1.47" rtpport="17245" rtcpport="17246" expire="60"/>
+    </content>
+  </conference>
+</iq>
+```
 
 ## Appending an attendant
 
 ## Removing an attendant
 
+```xml
+<iq type="set" id="123" to="jitsi-videobridge.xmpp.org" from="alice@xmpp.org/jitsi">
+  <conference xmlns="http://jitsi.org/protocol/colibri" id="82671f14104256bb">
+    <content name="audio">
+      <channel id="f24bb8fd74e5ee83" expire="0"/>
+    </content>
+  </conference>
+</iq>
+```
+
+```xml
+<iq type="result" id="123" from="jitsi-videobridge.bour.cc" to="alice@xmpp.org/jitsi">
+  <conference xmlns="http://jitsi.org/protocol/colibri" id="82671f14104256bb">
+    <content name="audio"/>
+  </conference>
+</iq>
+```

@@ -73,6 +73,9 @@ $> ejabberdctl videobridge_stats
 - Add SSRC, used codec, RTCP stats in stats
 - unittests
 - error cases
+- implement http://xmpp.org/extensions/xep-0092.html (jabber:iq:version)
+- implement http://xmpp.org/extensions/xep-0012.html (jabber:iq:last)
+
 
 ## NOT IMPLEMENTED
 
