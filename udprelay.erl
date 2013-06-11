@@ -201,7 +201,7 @@ handle_info({udp,Sock,SrcIP,SrcPort,Packet},
 
 	{noreply, State#context{stats=Stats2}};
 handle_info({udp,Sock,SrcIP,SrcPort,Packet}, State=#context{rtcpsock=Sock}) ->
-	?DEBUG("udprelay: received roghe RTCP packet from ~p:~p~n~p~n",[SrcIP,SrcPort,Packet]),
+	?DEBUG("udprelay: received rogue RTCP packet from ~p:~p~n~p~n",[SrcIP,SrcPort,Packet]),
 	{noreply, State};
 
 handle_info(_Info, State) ->
