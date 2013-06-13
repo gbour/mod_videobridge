@@ -16,7 +16,7 @@
 %%  - Hook callbacks
 -export([disco_items/5, disco_identity/5, disco_features/5, notify/2, stats/0]).
 % DEBUG
--export([allocate_port/2, uuid/1, uuid/0]).
+-export([allocate_port/2, uuid/1, uuid/0, rtprelay_event/2]).
 
 
 -include("ejabberd.hrl").
@@ -191,6 +191,8 @@ stats(Acc, Key={ConfId, ContentType}) ->
 
 	stats([Acc,$\n,Hdr,$\n,Ctnt], ets:next(videobridge_confs, Key)).
 
+rtprelay_event(Pid, {rtpexpiry, RtpPort}) ->
+	gen_server:cast(Pid, {rtpexpiry, RtpPort}).
 
 % handle received messages
 handle_info({route, From, To, Packet}, State) ->
@@ -313,6 +315,7 @@ channel(allocate, undef, {ConfId, ContentType}, #state{public_ip=PublicIp,rtp_ra
 	{ok, Proc} = udprelay:start_link([
 		{port,RtpPort},
 		{controller,self()},
+		{event_callback, {?MODULE, rtprelay_event}},
 		{confid,ConfId},
 		{chanid,ChanId}
 	]),
@@ -338,7 +341,7 @@ channel(free, ChanId, {ConfId, ContentType}, _)              ->
 		[{RtpPort, Proc, ChanId, ConfId, ContentType}] ->
 			?DEBUG("channl: find ets entry: confid=~p, ctype=~p, proc=~p", [ConfId, ContentType, Proc]),
 			[{_,From,Peers}] = ets:lookup(videobridge_confs, {ConfId,ContentType}),
-			[ udprelay:delpeer(P, Proc) || P <- Peers],
+			[ catch udprelay:delpeer(P, Proc) || P <- Peers],
 			ets:insert(videobridge_confs, {{ConfId,ContentType},From,lists:delete(Proc,Peers)}),
 
 			catch udprelay:shutdown(Proc),
@@ -391,6 +394,19 @@ handle_cast({latching, RtpPort, Ssrc}, State=#state{host=Host,public_ip=Ip}) ->
 		_ -> fail
 	end,
 	
+	{noreply, State};
+handle_cast({rtpexpiry, RtpPort}, State) ->
+	case ets:lookup(videobridge_ports, RtpPort) of
+		[{_,Proc,_,ConfId,ContentType}] ->
+			[{_,From,Peers}] = ets:lookup(videobridge_confs, {ConfId,ContentType}),
+			[ catch udprelay:delpeer(P, Proc) || P <- Peers],
+			ets:insert(videobridge_confs, {{ConfId,ContentType},From,lists:delete(Proc,Peers)}),
+
+			ets:delete(videobridge_ports, RtpPort);
+		_ ->
+			fail
+	end,
+
 	{noreply, State};
 handle_cast(_Msg, State) -> {noreply, State}.
 

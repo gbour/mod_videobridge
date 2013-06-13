@@ -33,6 +33,10 @@
 	rtcpsrc=undef,
 	recipients=[],
 
+	expiry=6000,
+	extimer,
+	evtclb,
+
 	% stats: RTP, RTCP: total count, total len, step count, step len
 	stats=#stats{}
 }).
@@ -45,6 +49,7 @@ init(Opts) ->
 	Ctrl = proplists:get_value(controller,Opts),
 	ConfId = proplists:get_value(confid, Opts),
 	ChanId = proplists:get_value(chanid, Opts),
+	EventClb = proplists:get_value(event_callback, Opts), % {Mod, Fun}
 	?DEBUG("udprelay:init :: opening udp socket on ~p port. Controller= ~p, conf=~p~n", [Port, Ctrl, ConfId]),
 
 	% open RTP port
@@ -53,7 +58,7 @@ init(Opts) ->
 			case gen_udp:open(Port+1, [binary,{active,true},{reuseaddr,true}]) of
 				{ok, RtcpSock} ->
 					{ok, #context{controller=Ctrl, confid=ConfId, chanid=ChanId, 
-							baseport=Port, 
+							baseport=Port, evtclb=EventClb,
 							rtpsock=RtpSock, rtcpsock=RtcpSock}
 					};
 				{error, Reason} ->
@@ -63,7 +68,8 @@ init(Opts) ->
 		{error, Reason} -> {stop, Reason}
 	end,
 
-	?DEBUG("udprelay: init(port= ~p, state= ~p)~n", [Port, State]),
+	Timer = erlang:start_timer(State#context.expiry, self(), expiry),
+	?DEBUG("udprelay: init(port= ~p, state= ~p)~n", [Port, State#context{extimer=Timer}]),
 	{Ret, State}.
 
 addpeer(Self, Pid) ->
@@ -144,6 +150,13 @@ handle_cast(_Req, State) ->
 	{noreply, State}.
 
 % timeout, system msg
+handle_info({timeout,_,expiry}, State=#context{controller=Ctrl,baseport=RtpPort,evtclb={Mod,Fun}}) ->
+	?DEBUG("udprelay: socket #~p timeout. closing~n", [RtpPort]),
+	%TODO: send RTCP BYE packet
+	Mod:Fun(Ctrl, {rtpexpiry, RtpPort}),
+
+	{stop, normal, State};
+
 handle_info(Req={udp,Sock,SrcIP,SrcPort,Packet},
 			State=#context{controller=Ctrl,baseport=Port,rtpsock=Sock,rtpsrc=undef}) ->
 	?DEBUG("urlrelay: RTP initiate latching ~p:~p~n", [SrcIP,SrcPort]),
@@ -171,8 +184,9 @@ handle_info(Req={udp,Sock,SrcIP,SrcPort,Packet},
 
 	{noreply, State3};
 handle_info({udp,Sock,SrcIP,SrcPort,Packet},
-            State=#context{rtpsock=Sock,rtpsrc={SrcIP,SrcPort},recipients=Rcps,
+            State=#context{rtpsock=Sock,rtpsrc={SrcIP,SrcPort},recipients=Rcps,expiry=Expiry,extimer=Timer,
                            stats=Stats})  ->
+	erlang:cancel_timer(Timer),
 	?DEBUG("udprelay: RTP packet received~n",[]),
 %	gen_udp:send(RtpSock,?,?,Packet),
 	[ udprelay:forward(R, {rtp, Packet}) || R <- Rcps ],
@@ -181,7 +195,8 @@ handle_info({udp,Sock,SrcIP,SrcPort,Packet},
 	{stat, Cnt,Len,GCnt,GLen} = Stats#stats.rtp_recv,
 	Stats2 = Stats#stats{rtp_recv={stat,Cnt+1,Len+byte_size(Packet),GCnt,GLen}},
 
-	{noreply, State#context{stats=Stats2}};
+	Timer2 = erlang:start_timer(Expiry, self(), expiry),
+	{noreply, State#context{stats=Stats2,extimer=Timer2}};
 % not matching sender
 handle_info({udp,Sock,SrcIP,SrcPort,Packet}, State=#context{rtpsock=Sock})  ->
 	?DEBUG("udprelay: received rogue RTP packet from ~p:~p~n~p~n",[SrcIP,SrcPort,Packet]),
@@ -191,7 +206,9 @@ handle_info(Req={udp,Sock,SrcIP,SrcPort,Packet}, State=#context{rtcpsock=Sock,rt
 	?DEBUG("urlrelay: RTCP initiate latching ~p:~p~n", [SrcIP,SrcPort]),
 	handle_info(Req, State#context{rtcpsrc={SrcIP,SrcPort}});
 handle_info({udp,Sock,SrcIP,SrcPort,Packet}, 
-            State=#context{rtcpsock=Sock,rtcpsrc={SrcIP,SrcPort},recipients=Rcps,stats=Stats}) ->
+            State=#context{rtcpsock=Sock,rtcpsrc={SrcIP,SrcPort},recipients=Rcps,stats=Stats,
+                           expiry=Expiry,extimer=Timer}) ->
+	erlang:cancel_timer(Timer),
 	?DEBUG("udprelay: RTCP packet received~n",[]),
 	[ udprelay:forward(R, {rtcp, Packet}) || R <- Rcps ],
 
@@ -199,7 +216,8 @@ handle_info({udp,Sock,SrcIP,SrcPort,Packet},
 	{stat, Cnt,Len,GCnt,GLen} = Stats#stats.rtcp_recv,
 	Stats2 = Stats#stats{rtcp_recv={stat,Cnt+1,Len+byte_size(Packet),GCnt,GLen}},
 
-	{noreply, State#context{stats=Stats2}};
+	Timer2 = erlang:start_timer(Expiry, self(), expiry),
+	{noreply, State#context{stats=Stats2,extimer=Timer2}};
 handle_info({udp,Sock,SrcIP,SrcPort,Packet}, State=#context{rtcpsock=Sock}) ->
 	?DEBUG("udprelay: received rogue RTCP packet from ~p:~p~n~p~n",[SrcIP,SrcPort,Packet]),
 	{noreply, State};
@@ -208,8 +226,10 @@ handle_info(_Info, State) ->
 	?DEBUG("udprelay: handle_info ~p (state= ~p)~n", [_Info, State]),
 	{noreply, State}.
 	
-terminate(Reason, #context{rtpsock=Socket}) ->
-	?DEBUG("udprelay: terminating (socket ~p)~n", [Socket]),
-	gen_udp:close(Socket).
+terminate(Reason, #context{rtpsock=Sock,rtcpsock=Sock2}) ->
+	?DEBUG("udprelay: terminating (socket ~p)~n", [Sock]),
+	gen_udp:close(Sock),
+	gen_udp:close(Sock2),
+	ok.
 
 code_change(OldSvn, State, _) -> {ok, State}.
