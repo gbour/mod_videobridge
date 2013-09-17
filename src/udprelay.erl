@@ -7,6 +7,7 @@
 -export([addpeer/2, delpeer/2, forward/2, stats/1, shutdown/1]).
 
 -include("ejabberd.hrl").
+-include("logger.hrl").
 
 -record(stat, {
 	count  = 0,

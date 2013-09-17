@@ -22,6 +22,7 @@
 -include("ejabberd.hrl").
 -include("jlib.hrl").
 -include("ejabberd_commands.hrl").
+-include("logger.hrl").
 
 -define(SUPERVISOR, ejabberd_sup).
 -define(SUBDOMAIN, <<"jitsi-videobridge">>).
